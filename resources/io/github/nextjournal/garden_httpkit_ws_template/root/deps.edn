@@ -1,0 +1,8 @@
+{:paths ["src" "resources"]
+
+ :deps {hiccup/hiccup {:mvn/version "2.0.0-RC3"}
+        http-kit/http-kit {:mvn/version "2.8.0"}
+        ring/ring-core {:mvn/version "1.12.1"}
+        org.clojure/data.json {:mvn/version "2.5.0"}}
+
+ :aliases {:nextjournal/garden {:exec-fn {{main/ns}}/serve!}}}

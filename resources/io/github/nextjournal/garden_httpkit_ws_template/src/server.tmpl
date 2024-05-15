@@ -1,0 +1,117 @@
+(ns {{main/ns}}
+  (:require [clojure.data.json :as json]
+            [org.httpkit.server :as server]
+            [hiccup.page :as page]
+            [ring.middleware.resource :as resource]
+            [ring.middleware.content-type :as content-type]))
+
+(defonce !state (atom {}))
+
+(defn broadcast! [msg]
+  (doseq [ch (:channels @!state)] (server/send! ch msg)))
+
+(def ws-handlers
+  {:init (fn [ch] (swap! !state update :channels (fnil conj #{}) ch))
+   :on-close (fn [ch _status] (swap! !state update :channels disj ch))
+   :on-ping (fn [ch] (server/send! ch "pong"))
+   :on-receive (fn [_ch msg]
+                 ;; alternatively you might want to use garden persistent storage
+                 ;; https://docs.apps.garden/#storage
+                 (swap! !state update :messages conj msg)
+                 (broadcast! msg))})
+
+(def styles
+  ":root {
+  --greenish: rgba(146, 189, 154, 1);
+  --greenish-60: rgba(146, 189, 154, 0.6);
+  --greenish-50: rgba(146, 189, 154, 0.5);
+  --greenish-30: rgba(146, 189, 154, 0.3)
+  }
+  body { background: #000 !important; font-family: 'Fira Sans', sans-serif; color: var(--greenish); }
+
+  .text-greenish { color: var(--greenish); }
+  .text-greenish-60 { color: var(--greenish-60); }
+  .bg-greenish { background-color: var(--greenish); }
+  .bg-greenish-30 { background-color: var(--greenish-30); }
+  .bg-greenish-50 { background-color: var(--greenish-50); }
+  .border-greenish-30 { border: 2px solid var(--greenish-30); }
+  .border-greenish-50 { border: 2px solid var(--greenish-50); }
+
+  input:focus, button:focus { outline: 2px solid var(--greenish); }
+  input::placeholder { @apply text-greenish-60; }
+  .msg { @apply p-2 mt-3 rounded-md border border-greenish-50 w-full; }
+  .msg > em { @apply underline mr-3; }
+  .msg > span { @apply text-xl; }
+")
+
+(def head
+  [:head
+   [:meta {:charset "UTF-8"}]
+   [:meta {:name "viewport" :content "width=device-width, initial-scale=1"}]
+   ;; we import tailwind play CDN for ease of development, you should use a compiled version for production
+   [:script {:src "https://cdn.tailwindcss.com"}]
+   ;; resolve relative imports of squint core namespaces
+   [:script {:type "importmap"} (json/write-str {:imports {"squint-cljs/" "https://cdn.skypack.dev/squint-cljs/"}})]
+   ;; frontend code is loaded from resources
+   [:script {:type :module :src "/js/client.mjs"}]
+   ;; garden signature logo :-)
+   [:script {:type :module :src "https://login.auth.application.garden/leaf.mjs"}]
+   [:style {:type "text/tailwindcss"} styles]])
+
+(defn app [{:as req :keys [request-method websocket?]}]
+  (prn :uri (:uri req))
+  (cond
+    websocket?
+    (server/as-channel req ws-handlers)
+
+    ;; respond to garden pings
+    (= :head request-method)
+    {:status 200}
+
+    :else
+    {:status 200
+     :headers {"content-type" "text/html"}
+     :body (page/html5 head
+                       [:body.flex.justify-center.font-sans.text-lg
+                        [:div {:class "md:w-1/2 w-full p-5"}
+                         [:div#leaf.flex.justify-center.mt-4.md:mt-8
+                          {:class "h-[150px] md:h-[200px]"
+                           :style {:stroke "rgba(146, 189, 154, 1)"
+                                   :stroke-width "0.01"}}]
+                         [:div.relative
+                          [:input.mb-3.px-3.msg.w-full.py-5
+                           {:type "text" :class "bg-[#1c1c1c]" :placeholder "Enter text…"
+                            :style {:box-shadow "0 0 3px 2px rgba(41, 42, 41, 0.5)"}}]
+                          [:button.absolute.right-2.md:right-3.text-greenish-60.px-1.border-greenish-50.rounded-md
+                           {:class "top-[20px]"}
+                           "Send (↵)"]]
+                         (into [:div#messages]
+                               (map (fn [m]
+                                      (let [{:strs [from message]} (json/read-str m)]
+                                        [:div.msg [:em (str from ":")] [:span message]])))
+                               (:messages @!state))]])}))
+
+(def ring-handler
+  (-> app
+      (resource/wrap-resource "public")
+      (content-type/wrap-content-type {:mime-types {"mjs" "application/javascript"}})))
+
+(defn halt! []
+  (swap! !state update :server
+         (fn [s] (when s (server/server-stop! s)))))
+
+(defn serve! [{:as opts :keys [host port] :or {host "0.0.0.0"}}]
+  (halt!)
+  (swap! !state assoc :server
+         (server/run-server #'ring-handler (assoc opts :ip host :legacy-return-value? false)))
+  (println (format "%s server listening on %s:%s…" "{{main/ns}}" host port)))
+
+(comment
+  ;; (re)start server
+  (serve! {:port 8989})
+
+  ;; reset messages
+  (swap! !state assoc :messages nil)
+
+  ;; broadcast over nREPL, when connected via `garden repl`
+  (broadcast! "Hello from server"))

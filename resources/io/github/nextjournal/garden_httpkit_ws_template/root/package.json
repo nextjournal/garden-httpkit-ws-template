@@ -1,0 +1,5 @@
+{
+  "devDependencies": {
+    "squint-cljs": "^0.7.108"
+  }
+}
